@@ -1,0 +1,39 @@
+{% extends "layout.html" %}
+
+{% block title %}
+    News
+{% endblock %}
+
+{% block main %}
+
+    <div>
+        <form action="/news" method="post">
+            <div class="form-group">
+            <input autocomplete="off" autofocus class="form-control" name="symbol" placeholder="Ticker Symbol" type="text">
+        </div>
+        <button class="btn btn-success" type="submit">Search</button>
+    </form>
+    </div>
+    
+    {% if ticker_news %}
+    
+    <div class="section">
+    <h2>News</h2>
+        <div>
+            <h4>{{ ticker_symb.name }}</h4>
+            <h4>Current Price: {{ ticker_symb.price | usd}}</h4>
+            {% for row in ticker_news %}
+                <ul class="list-group list-group-flush border">
+                    <li class="list-group-item"><img class="img-fluid" src="{{ row.thumbnail }}" class="img-thumbail"></li>
+                    <li class="list-group-item">Source: {{ row.publisher }}</li>
+                    <a href="{{ row.url }}" class="list-group-item list-group-item-action">Title: {{ row.title }}</a>
+                    <li class="list-group-item">{{ row.description }}</li>
+                </ul>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+    <div class="text-warning">
+        {{ message }}
+    </div>
+{% endblock %}
