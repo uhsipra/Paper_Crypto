@@ -1,12 +1,15 @@
 import os
 
-from cs50 import SQL
+#from cs50 import SQL
+import sqlite3
 from flask import Flask, flash, redirect, render_template, request, session
+from flask.scaffold import F
 from flask_session import Session
 from tempfile import mkdtemp
 from werkzeug.exceptions import default_exceptions, HTTPException, InternalServerError
 from werkzeug.security import check_password_hash, generate_password_hash
 from datetime import date, datetime
+import copy
 
 from helpers import login_required, lookup, usd, news_lookup
 
@@ -36,8 +39,8 @@ app.config["SESSION_TYPE"] = "filesystem"
 Session(app)
 
 # Configure CS50 Library to use SQLite database
-db = SQL("sqlite:///crypto.db")
-
+db = sqlite3.connect('crypto.db', check_same_thread=False)
+db.row_factory = sqlite3.Row # Changes the cursor from tuples to dictionary
 # Make sure API key is set
 if not os.environ.get("API_KEY"):
     raise RuntimeError("API_KEY not set")
@@ -49,14 +52,23 @@ def index():
     """Show portfolio of stocks"""
     grand_total = 0;
     
-    rows = db.execute("SELECT ticker_symbol, shares, cash FROM portfolio JOIN users ON portfolio.user_id = users.id WHERE user_id = ?", session["user_id"])
+
+    temp = (db.execute("SELECT ticker_symbol, shares, cash FROM portfolio JOIN users ON portfolio.user_id = users.id WHERE user_id = ?", (session["user_id"],))).fetchall()
     
-    if not rows:
-        user_cash = (db.execute("SELECT cash FROM users WHERE id = ?", session["user_id"]))[0]["cash"]
+    if not temp:
+        user_cash = (db.execute("SELECT cash FROM users WHERE id = ?", (session["user_id"],))).fetchall()[0]["cash"]
         grand_total = user_cash
         flash('Portfolio currently empty.')
         return render_template("index.html", user_cash=user_cash, grand_total=grand_total)
     else:
+        rows = []
+        for x in temp:
+            test = dict()
+            test["ticker_symbol"] = x["ticker_symbol"]
+            test["shares"] = x["shares"]
+            test["cash"] = x["cash"]
+            rows.append(test)
+
         user_cash = rows[0]["cash"]
         
         for row in rows:
@@ -79,7 +91,8 @@ def buy():
         
         shares = request.form.get("shares") # "shares" is the amount of money the user wants to put into a certain crypto.
         ticker_symb = lookup((request.form.get("symbol")).upper())
-        user_cash = db.execute("SELECT cash FROM users WHERE id = ?", session["user_id"])
+        user_cash = db.execute("SELECT cash FROM users WHERE id = ?", (session["user_id"],)).fetchall()
+        cash = user_cash[0]["cash"]
 
         if not request.form.get("symbol"):
             return render_template("buy.html", user_cash=user_cash[0]["cash"], error_message_buy="Please enter a cryptocurrency ticker.")
@@ -94,21 +107,25 @@ def buy():
         if user_cash[0]["cash"] < shares: #try changing this so that users can say how much money they want to spend on a crypto instead of how many shares they want to buy, making partial shares possible.
             return render_template("buy.html", user_cash=user_cash[0]["cash"], error_message_buy="Insufficient funds.")
         
-        user_cash[0]["cash"] -= shares
-        db.execute("INSERT INTO transactions (user_id, ticker_symbol, shares, share_price, total_value, date_, time_, transaction_type) VALUES(?, ?, ?, ?, ?, date('now'), time('now'), 'BUY')", session["user_id"], ticker_symb["symbol"], (shares/ticker_symb["price"]), ticker_symb["price"], shares)
-        db.execute("UPDATE users SET cash = ? WHERE id = ?", user_cash[0]["cash"], session["user_id"])
+        cash -= shares
+        db.execute("INSERT INTO transactions (user_id, ticker_symbol, shares, share_price, total_value, date_, time_, transaction_type) VALUES(?, ?, ?, ?, ?, date('now'), time('now'), 'BUY')", (session["user_id"], ticker_symb["symbol"], (shares/ticker_symb["price"]), ticker_symb["price"], shares))
+        db.commit()
+        db.execute("UPDATE users SET cash = ? WHERE id = ?", (cash, session["user_id"]))
+        db.commit()
         
-        user_shares = db.execute("SELECT shares FROM portfolio WHERE user_id = ? AND ticker_symbol = ?", session["user_id"], ticker_symb["symbol"])
+        user_shares = db.execute("SELECT shares FROM portfolio WHERE user_id = ? AND ticker_symbol = ?", (session["user_id"], ticker_symb["symbol"])).fetchall()
         
         if not user_shares:
-            db.execute("INSERT INTO portfolio (user_id, ticker_symbol, shares) VALUES(?, ?, ?)", session["user_id"], ticker_symb["symbol"], (shares/ticker_symb["price"]))
+            db.execute("INSERT INTO portfolio (user_id, ticker_symbol, shares) VALUES(?, ?, ?)", (session["user_id"], ticker_symb["symbol"], (shares/ticker_symb["price"])))
+            db.commit()
         elif user_shares[0]["shares"] > 0:
-            db.execute("UPDATE portfolio SET shares = ? WHERE user_id = ? AND ticker_symbol = ?", (user_shares[0]["shares"] + (shares/ticker_symb["price"])), session["user_id"], ticker_symb["symbol"])
+            db.execute("UPDATE portfolio SET shares = ? WHERE user_id = ? AND ticker_symbol = ?", ((user_shares[0]["shares"] + (shares/ticker_symb["price"])), session["user_id"], ticker_symb["symbol"]))
+            db.commit()
         
         flash('Successfully Bought.')
         return redirect("/")
     else:
-        user_cash = db.execute("SELECT cash FROM users WHERE id = ?", session["user_id"])
+        user_cash = db.execute("SELECT cash FROM users WHERE id = ?", (session["user_id"],)).fetchall()
         if user_cash[0]["cash"] == 0:
             return render_template("buy.html", message="Account cash balance empty.")
         return render_template("buy.html", user_cash=user_cash[0]["cash"])
@@ -123,7 +140,7 @@ def history():
             flash('Please select a timeline.')
             return redirect("/history")
         
-        history = db.execute("SELECT ticker_symbol, shares, share_price, total_value, date_, time_, transaction_type FROM transactions WHERE user_id = ? AND date_ BETWEEN date('now', ?) AND date('now') ORDER BY(transaction_id) DESC", session["user_id"], request.form.get("date"))
+        history = db.execute("SELECT ticker_symbol, shares, share_price, total_value, date_, time_, transaction_type FROM transactions WHERE user_id = ? AND date_ BETWEEN date('now', ?) AND date('now') ORDER BY(transaction_id) DESC", (session["user_id"], request.form.get("date"))).fetchall()
     
         if not history:
             return render_template("history.html", message="No transaction history to show.")
@@ -152,10 +169,10 @@ def login():
             return render_template("login.html", error_message_login="Please enter password.")
 
         # Query database for username
-        rows = db.execute("SELECT * FROM users WHERE username = ?", request.form.get("username"))
+        rows = (db.execute("SELECT * FROM users WHERE username = ?", (request.form.get("username"),))).fetchall()
 
         # Ensure username exists and password is correct
-        if len(rows) != 1 or not check_password_hash(rows[0]["hash"], request.form.get("password")):
+        if len(rows) != 1 or not check_password_hash(rows[0]["hash"], request.form.get("password")) or not rows:
             return render_template("login.html", error_message_login="Invalid username and/or password.")
 
         # Remember which user has logged in
@@ -220,13 +237,14 @@ def register():
             flash('Passwords do not match.')
             return redirect("/register")
 
-        rows = db.execute("SELECT * FROM users WHERE username = ?", username)
+        rows = db.execute("SELECT * FROM users WHERE username = ?", (username,))
 
-        if len(rows) == 1:
+        if len(rows.fetchall()) == 1:
             flash('Username is already taken.')
             return redirect("/register")
 
-        db.execute("INSERT INTO users (username, hash) VALUES(?, ?)", username, generate_password_hash(password))
+        db.execute("INSERT INTO users (username, hash) VALUES(?, ?)", (username, generate_password_hash(password)))
+        db.commit()
         return render_template("login.html", message="Registration complete.")
 
     else:
@@ -252,13 +270,14 @@ def reset():
             flash('Passwords do not match')
             return redirect("/reset")
 
-        user_hash = db.execute("SELECT hash FROM users WHERE id = ?", session["user_id"])
+        user_hash = db.execute("SELECT hash FROM users WHERE id = ?", (session["user_id"],)).fetchall()
 
         if check_password_hash(user_hash[0]["hash"], password):
             flash('New password cannot be the same as the current password.')
             return redirect("/reset")
 
-        db.execute("UPDATE users SET hash = ? WHERE id = ?", generate_password_hash(password), session["user_id"])
+        db.execute("UPDATE users SET hash = ? WHERE id = ?", (generate_password_hash(password), session["user_id"]))
+        db.commit()
 
         flash('Password Successfully Changed.')
         return redirect("/")
@@ -274,7 +293,7 @@ def sell():
     
     if request.method == "POST":
         
-        user_stocks = db.execute("SELECT ticker_symbol, shares FROM portfolio WHERE user_id = ?", session["user_id"])
+        user_stocks = db.execute("SELECT ticker_symbol, shares FROM portfolio WHERE user_id = ?", (session["user_id"],)).fetchall()
         
         if not request.form.get("symbol"):
             return render_template("sell.html", user_stocks=user_stocks, error_message_sell="Please select a cryptocurrency to sell.")
@@ -282,38 +301,44 @@ def sell():
             return render_template("sell.html", user_stocks=user_stocks, error_message_sell="Please enter the amount to sell.")
             
         ticker_symb = lookup(request.form.get("symbol"))
-        shares = request.form.get("shares")
-        user_shares = db.execute("SELECT shares FROM portfolio WHERE user_id = ? AND ticker_symbol = ?", session["user_id"], ticker_symb["symbol"])
+        shares_sell = request.form.get("shares")
+        user_shares = db.execute("SELECT shares FROM portfolio WHERE user_id = ? AND ticker_symbol = ?", (session["user_id"], ticker_symb["symbol"])).fetchall()
         
         if not user_shares:
             return render_template("sell.html", user_stocks=user_stocks, error_message_sell="Sorry, you do not own any of that cryptocurrency.")
         
         if not request.form.get("symbol"):
             return render_template("sell.html", user_stocks=user_stocks, error_message_sell="Please select a cryptocurrency to sell.")
-        elif float(shares) <= 0:
+        elif float(shares_sell) <= 0:
             return render_template("sell.html", user_stocks=user_stocks, error_message_sell="Please enter a positive number of shares to sell.")
-        elif user_shares[0]["shares"] < float(shares):
+        elif user_shares[0]["shares"] < float(shares_sell):
             return render_template("sell.html", user_stocks=user_stocks, error_message_sell="Sorry, please enter an amount within your current holding.")
             
-        shares = float(shares)    
-        user_cash = db.execute("SELECT cash FROM users WHERE id = ?", session["user_id"])
-        user_shares[0]["shares"] -= shares
-        user_cash[0]["cash"] += (shares * ticker_symb["price"])
+        shares_sell = float(shares_sell)    
+        user_cash = db.execute("SELECT cash FROM users WHERE id = ?", (session["user_id"],)).fetchall()
+        shares = user_shares[0]["shares"]
+        shares -= shares_sell
+        cash = user_cash[0]["cash"]
+        cash += (shares_sell * ticker_symb["price"])
         
-        db.execute("INSERT INTO transactions (user_id, ticker_symbol, shares, share_price, total_value, date_, time_ , transaction_type) VALUES(?, ?, ?, ?, ?, date('now'), time('now'), 'SELL')", session["user_id"], ticker_symb["symbol"], shares, ticker_symb["price"], shares*ticker_symb["price"])
-        db.execute("UPDATE users SET cash = ? WHERE id = ?", user_cash[0]["cash"], session["user_id"])
+        db.execute("INSERT INTO transactions (user_id, ticker_symbol, shares, share_price, total_value, date_, time_ , transaction_type) VALUES(?, ?, ?, ?, ?, date('now'), time('now'), 'SELL')", (session["user_id"], ticker_symb["symbol"], shares_sell, ticker_symb["price"], shares_sell*ticker_symb["price"]))
+        db.commit()
+        db.execute("UPDATE users SET cash = ? WHERE id = ?", (cash, session["user_id"]))
+        db.commit()
         
-        if user_shares[0]["shares"] > 0:
-            db.execute("UPDATE portfolio SET shares = ? WHERE user_id = ? AND ticker_symbol = ?", user_shares[0]["shares"], session["user_id"], ticker_symb["symbol"])
+        if shares > 0:
+            db.execute("UPDATE portfolio SET shares = ? WHERE user_id = ? AND ticker_symbol = ?", (shares, session["user_id"], ticker_symb["symbol"]))
+            db.commit()
         else:
-            db.execute("DELETE FROM portfolio WHERE user_id = ? AND ticker_symbol = ?", session["user_id"], ticker_symb["symbol"])
+            db.execute("DELETE FROM portfolio WHERE user_id = ? AND ticker_symbol = ?", (session["user_id"], ticker_symb["symbol"]))
+            db.commit()
             
         flash('Successfully Sold.')
         return redirect("/")
 
     else:
 
-        user_stocks = db.execute("SELECT ticker_symbol, shares FROM portfolio WHERE user_id = ?", session["user_id"])
+        user_stocks = db.execute("SELECT ticker_symbol, shares FROM portfolio WHERE user_id = ?", (session["user_id"],)).fetchall()
         if not user_stocks:
             return render_template("sell.html", user_stocks=user_stocks, error_message_sell="No cryptocurrency currently owned.")
         return render_template("sell.html", user_stocks=user_stocks)
@@ -343,7 +368,7 @@ def errorhandler(e):
     """Handle error"""
     if not isinstance(e, HTTPException):
         e = InternalServerError()
-    return apology(e.name, e.code)
+    return print(e.name, e.code)
 
 
 # Listen for errors
