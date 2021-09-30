@@ -252,16 +252,19 @@ def register():
         
 
 @app.route("/reset", methods=["GET", "POST"])
-@login_required
 def reset():
     """Reset user password"""
     if request.method == "POST":
 
+        username = request.form.get("username")
         password = request.form.get("password")
         confirmation = request.form.get("confirmation")
 
-        if not password or not confirmation:
-            flash('Please enter password.')
+        if not username:
+            flash('Please enter username')
+            return redirect("/reset")
+        elif not password or not confirmation:
+            flash('Please enter password')
             return redirect("/reset")
         elif len(password) < 5:
             flash('Password must be atleast 5 characters long.')
@@ -270,17 +273,20 @@ def reset():
             flash('Passwords do not match')
             return redirect("/reset")
 
-        user_hash = db.execute("SELECT hash FROM users WHERE id = ?", (session["user_id"],)).fetchall()
+        user_hash = db.execute("SELECT hash FROM users WHERE username = ?", (username,)).fetchall()
+
+        if not user_hash:
+            flash('Username does not exist')
+            return redirect("/reset")
 
         if check_password_hash(user_hash[0]["hash"], password):
             flash('New password cannot be the same as the current password.')
             return redirect("/reset")
 
-        db.execute("UPDATE users SET hash = ? WHERE id = ?", (generate_password_hash(password), session["user_id"]))
+        db.execute("UPDATE users SET hash = ? WHERE username = ?", (generate_password_hash(password), username))
         db.commit()
 
-        flash('Password Successfully Changed.')
-        return redirect("/")
+        return render_template("login.html", message="Password has been reset.")
         
     else:
         return render_template("Reset_Password.html")
