@@ -32,4 +32,4 @@
  Application.py contains the main code for the webapp.
  Crypto.db is the database file that stores all the tables used via SQLite3.
  The templates file includes all the html files created for the webapp.
- The static file inlcudes the styles.css file which contains any styling alterations.
+ The static file includes the styles.css file which contains any styling alterations.
